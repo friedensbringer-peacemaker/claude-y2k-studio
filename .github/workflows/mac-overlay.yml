@@ -1,0 +1,49 @@
+# Baut und testet das Mac-Overlay auf einem echten Mac (GitHub-Runner).
+# Läuft bei Änderungen am Mac-Code und lässt sich unter „Actions“ von Hand starten.
+name: Mac-Overlay bauen
+
+on:
+  push:
+    paths:
+      - 'y2k/overlay/mac/**'
+      - '.github/workflows/mac-overlay.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift-Version
+        run: swiftc --version
+
+      - name: start.sh prüfen (Syntax)
+        run: sh -n y2k/overlay/mac/start.sh
+
+      - name: Overlay bauen
+        run: swiftc -O y2k/overlay/mac/Y2KOverlay.swift -o Y2KOverlay-mac
+
+      - name: Starten, Lebenszeichen prüfen, per Warteschlange beenden
+        run: |
+          DIR="$HOME/.claude/y2k-overlay"
+          ./Y2KOverlay-mac &
+          PID=$!
+          for i in $(seq 1 20); do [ -f "$DIR/alive" ] && break; sleep 0.5; done
+          test -f "$DIR/alive" || { echo "Kein Lebenszeichen"; kill $PID; exit 1; }
+          echo "Lebenszeichen: $(cat "$DIR/alive")"
+          # Effekte anstoßen (darf nicht abstürzen), dann beenden
+          N=$(date +%s)000000
+          printf '%s feuerwerk\n%s blasen\n%s banner 2 ##..##|.####.\n' $((N+1)) $((N+2)) $((N+3)) > "$DIR/command"
+          sleep 2
+          kill -0 $PID || { echo "Overlay ist abgestürzt"; exit 1; }
+          printf '%s quit\n' $((N+4)) >> "$DIR/command"
+          for i in $(seq 1 20); do kill -0 $PID 2>/dev/null || break; sleep 0.5; done
+          if kill -0 $PID 2>/dev/null; then echo "Beendet sich nicht"; kill $PID; exit 1; fi
+          test ! -f "$DIR/alive" || { echo "alive wurde nicht entfernt"; exit 1; }
+          echo "Start, Effekte und Beenden ok"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Y2KOverlay-mac
+          path: Y2KOverlay-mac

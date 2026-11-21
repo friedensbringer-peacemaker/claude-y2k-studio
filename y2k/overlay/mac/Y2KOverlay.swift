@@ -12,10 +12,15 @@
 //   ~/.claude/y2k-overlay/alive          Lebenszeichen (jede Sekunde)
 //
 // Bauen:  swiftc -O Y2KOverlay.swift -o Y2KOverlay-mac   (start.sh erledigt das)
-// Noch nicht enthalten (siehe AGENTS.md, Abschnitt Mac): Anker über die Accessibility-API
-// (Eingabefeld-Ring, Sitzungs-Sterne, Kopfleisten-Symbole), Tastenkürzel.
+//
+// Anker (Eingabefeld-Ring, Sitzungs-Sterne, Kopfleisten-Symbole) liest es über die
+// Accessibility-API von macOS. Dafür braucht es einmal die Freigabe unter
+// Systemeinstellungen → Datenschutz & Sicherheit → Bedienungshilfen. Ohne Freigabe laufen
+// Rahmen und Effekte trotzdem. Tastenkürzel: ⌃⌥Y blendet ein und aus.
 
 import AppKit
+import ApplicationServices
+import Carbon
 
 // MARK: - Dateien
 
@@ -76,6 +81,7 @@ func strokeGradient(_ ctx: CGContext, _ path: CGPath, width: CGFloat, colors: [N
 struct Settings {
     var aktiv = true, rahmen = true, glitzer = true, scanlines = false, schild = true
     var feuerwerk = false, seifenblasen = false
+    var eingabe = true, sitzungen = true, kopfleiste = true
     var schildpos = "oben-mitte"
     var feuerwerkAlle: Double = 45, feuerwerkMenge: CGFloat = 1, blasenMenge: CGFloat = 1
 
@@ -83,6 +89,7 @@ struct Settings {
         func flag(_ k: String, _ v: inout Bool) { if let b = json[k] as? Bool { v = b } }
         flag("aktiv", &aktiv); flag("rahmen", &rahmen); flag("glitzer", &glitzer); flag("scanlines", &scanlines)
         flag("schild", &schild); flag("feuerwerk", &feuerwerk); flag("seifenblasen", &seifenblasen)
+        flag("eingabe", &eingabe); flag("sitzungen", &sitzungen); flag("kopfleiste", &kopfleiste)
         if let s = json["schildpos"] as? String { schildpos = s }
         if let n = json["feuerwerkalle"] as? Double { feuerwerkAlle = max(5, n) }
         if let n = json["feuerwerkmenge"] as? Double { feuerwerkMenge = CGFloat(min(400, max(10, n)) / 100) }
@@ -98,6 +105,168 @@ struct FireSpark { var x, y, px, py, vx, vy, age, life, size: CGFloat; var tint:
 struct Bubble {
     var x0, y, r, vy, phase, sway, age, life: CGFloat
     var x: CGFloat { x0 + sin(phase + age * 1.3) * sway }
+}
+
+// MARK: - Anker: echte Bedienelemente der Claude-App (Accessibility-API)
+
+enum AnchorKind { case running, unread, waiting, menu }
+
+struct Anchor { let kind: AnchorKind; let rect: CGRect }      // Bildschirm-Koordinaten (oben links)
+struct IconAnchor { let kind: String; let rel: CGRect; let enabled: Bool } // relativ zum Fenster
+
+struct Scan {
+    var anchors: [Anchor] = []
+    var icons: [IconAnchor] = []
+    var working = false          // Knopf „Stopp“ ist da: Claude arbeitet
+    var input: CGRect = .null    // Eingabebereich (Feld + Knöpfe), Bildschirm-Koordinaten
+}
+
+// Liest im Hintergrund alle 0,6 s die Bedienelemente des Claude-Fensters.
+// Die Namen sind die der deutschen Oberfläche, wie in der Windows-Fassung.
+final class AnchorScanner {
+    private let lock = NSLock()
+    private var latestScan = Scan()
+    private var pid: pid_t = 0
+    private var window: CGRect = .zero
+    private var primedPid: pid_t = 0
+
+    var latest: Scan { lock.lock(); defer { lock.unlock() }; return latestScan }
+
+    func update(pid: pid_t, window: CGRect) {
+        lock.lock(); self.pid = pid; self.window = window; lock.unlock()
+    }
+
+    static let headerIcons: [String: String] = [
+        "Menü": "menu", "Seitenleiste ausblenden": "sidebar", "Seitenleiste einblenden": "sidebar",
+        "Zurück": "back", "Vorwärts": "forward",
+        "Sitzungsleiste": "list", "Terminal": "terminal", "Änderungen": "diff",
+        "Browser": "globe", "Dateien": "folder", "Optionen anzeigen": "dots",
+    ]
+
+    func start() {
+        let thread = Thread { [weak self] in
+            while let self {
+                self.lock.lock(); let pid = self.pid; let window = self.window; self.lock.unlock()
+                if pid != 0 && AXIsProcessTrusted() {
+                    let scan = self.read(pid: pid, window: window)
+                    self.lock.lock(); self.latestScan = scan; self.lock.unlock()
+                }
+                Thread.sleep(forTimeInterval: 0.6)
+            }
+        }
+        thread.name = "Y2K-Anker"
+        thread.start()
+    }
+
+    private static let keys = ["AXRole", "AXDescription", "AXTitle", "AXPosition", "AXSize", "AXChildren", "AXEnabled"] as CFArray
+
+    private func read(pid: pid_t, window: CGRect) -> Scan {
+        let app = AXUIElementCreateApplication(pid)
+        // Electron baut seinen Barrierefreiheits-Baum erst auf Nachfrage
+        if primedPid != pid {
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            primedPid = pid
+        }
+        var scan = Scan()
+        var edit = CGRect.null
+        var parts: [CGRect] = []
+
+        // Breitensuche ab der App, begrenzt, damit ein großer Chat nicht bremst
+        var queue: [AXUIElement] = [app]
+        var visited = 0
+        while !queue.isEmpty && visited < 6000 {
+            let element = queue.removeFirst()
+            visited += 1
+            var values: CFArray?
+            guard AXUIElementCopyMultipleAttributeValues(element, AnchorScanner.keys, AXCopyMultipleAttributeOptions(rawValue: 0), &values) == .success,
+                  let list = values as? [AnyObject], list.count == 7 else { continue }
+
+            if let children = list[5] as? [AXUIElement] { queue.append(contentsOf: children) }
+
+            let role = list[0] as? String ?? ""
+            let desc = list[1] as? String ?? ""
+            let title = list[2] as? String ?? ""
+            let name = desc.isEmpty ? title : desc
+            guard let rect = AnchorScanner.frame(list[3], list[4]), rect.width > 1, rect.height > 1 else { continue }
+            // Nur, was im Claude-Fenster liegt
+            guard window.intersects(rect) else { continue }
+
+            if role == "AXMenu" { scan.anchors.append(Anchor(kind: .menu, rect: rect)); continue }
+            if role == "AXTextArea" || role == "AXTextField" {
+                if name == "Prompt" { edit = rect }
+                continue
+            }
+            guard role == "AXButton" else { continue }
+
+            if let kind = AnchorScanner.headerIcons[name], rect.maxY - window.minY < 44 {
+                let enabled = (list[6] as? Bool) ?? true
+                scan.icons.append(IconAnchor(kind: kind, rel: rect.offsetBy(dx: -window.minX, dy: -window.minY), enabled: enabled))
+                continue
+            }
+            if name == "Stopp" { scan.working = true; parts.append(rect); continue }
+            if name == "Hinzufügen" || name == "Zum Aufnehmen gedrückt halten" || name == "Senden"
+                || name.hasPrefix("Modell:") || name.hasPrefix("Nutzung:") { parts.append(rect); continue }
+
+            // Sitzungen in der Seitenleiste: breite, flache Knöpfe mit Status im Namen
+            if rect.width >= 250 && rect.width <= 520 && rect.height >= 24 && rect.height <= 40 {
+                if name.contains(" Läuft") { scan.anchors.append(Anchor(kind: .running, rect: rect)) }
+                else if name.contains("Ungelesene Antwort") { scan.anchors.append(Anchor(kind: .unread, rect: rect)) }
+                else if name.contains("Warte auf Eingabe") { scan.anchors.append(Anchor(kind: .waiting, rect: rect)) }
+            }
+        }
+        if !edit.isNull {
+            var u = edit
+            for p in parts where abs(p.midY - edit.midY) < 90 && p.minX > edit.minX - 200 && p.maxX < edit.maxX + 200 {
+                u = u.union(p)
+            }
+            scan.input = u.insetBy(dx: -14, dy: -12)
+        } else {
+            scan.working = false
+        }
+        return scan
+    }
+
+    private static func frame(_ position: AnyObject, _ size: AnyObject) -> CGRect? {
+        guard CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var p = CGPoint.zero, s = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &s) else { return nil }
+        return CGRect(origin: p, size: s)
+    }
+}
+
+// Glyphe im 24er-Raster für die Kopfleisten-Symbole (wie in der Windows-Fassung)
+func glyph(_ kind: String) -> CGPath {
+    let p = CGMutablePath()
+    func line(_ a: CGPoint, _ b: CGPoint) { p.move(to: a); p.addLine(to: b) }
+    func pts(_ list: [CGPoint]) { p.addLines(between: list) }
+    switch kind {
+    case "menu":
+        line(CGPoint(x: 6, y: 7), CGPoint(x: 18, y: 7)); line(CGPoint(x: 6, y: 12), CGPoint(x: 18, y: 12)); line(CGPoint(x: 6, y: 17), CGPoint(x: 18, y: 17))
+    case "sidebar":
+        p.addRoundedRect(in: CGRect(x: 5, y: 6, width: 14, height: 12), cornerWidth: 2.5, cornerHeight: 2.5); line(CGPoint(x: 10, y: 6.5), CGPoint(x: 10, y: 17.5))
+    case "back":
+        pts([CGPoint(x: 14, y: 7), CGPoint(x: 9, y: 12), CGPoint(x: 14, y: 17)])
+    case "forward":
+        pts([CGPoint(x: 10, y: 7), CGPoint(x: 15, y: 12), CGPoint(x: 10, y: 17)])
+    case "list":
+        for i in 0..<3 {
+            let y = CGFloat(7 + i * 5)
+            p.addEllipse(in: CGRect(x: 6.2, y: y - 0.8, width: 1.6, height: 1.6)); line(CGPoint(x: 10, y: y), CGPoint(x: 18, y: y))
+        }
+    case "terminal":
+        pts([CGPoint(x: 6, y: 8), CGPoint(x: 10, y: 12), CGPoint(x: 6, y: 16)]); line(CGPoint(x: 12, y: 16.5), CGPoint(x: 18, y: 16.5))
+    case "diff":
+        p.addRoundedRect(in: CGRect(x: 5, y: 5, width: 14, height: 14), cornerWidth: 3, cornerHeight: 3)
+        line(CGPoint(x: 12, y: 7.5), CGPoint(x: 12, y: 11.5)); line(CGPoint(x: 10, y: 9.5), CGPoint(x: 14, y: 9.5)); line(CGPoint(x: 10, y: 15), CGPoint(x: 14, y: 15))
+    case "globe":
+        p.addEllipse(in: CGRect(x: 5, y: 5, width: 14, height: 14)); p.addEllipse(in: CGRect(x: 9, y: 5, width: 6, height: 14)); line(CGPoint(x: 5, y: 12), CGPoint(x: 19, y: 12))
+    case "folder":
+        pts([CGPoint(x: 4.5, y: 7.5), CGPoint(x: 9.5, y: 7.5), CGPoint(x: 11, y: 9.5), CGPoint(x: 19.5, y: 9.5), CGPoint(x: 19.5, y: 17.5), CGPoint(x: 4.5, y: 17.5)]); p.closeSubpath()
+    case "dots":
+        for i in 0..<3 { p.addEllipse(in: CGRect(x: 5.2 + CGFloat(i) * 6, y: 11.2, width: 1.6, height: 1.6)) }
+    default: break
+    }
+    return p
 }
 
 // MARK: - Zeichenfläche
@@ -133,6 +302,12 @@ final class Overlay: NSObject, NSApplicationDelegate {
     var lastAlive: TimeInterval = -10, lastFileCheck: TimeInterval = -10
     var statusItem: NSStatusItem!
 
+    let scanner = AnchorScanner()
+    var scan = Scan()
+    var wasWorking = false
+    var origin = CGPoint.zero   // linke obere Ecke des Claude-Fensters (Bildschirm-Koordinaten)
+    var hotKeyRef: EventHotKeyRef?
+
     var now: TimeInterval { Date().timeIntervalSince(clock) }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -159,13 +334,40 @@ final class Overlay: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Feuerwerk zünden", action: #selector(menuFirework), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Seifenblasen pusten", action: #selector(menuBubbles), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Ein-/Ausblenden", action: #selector(menuToggle), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Ein-/Ausblenden (⌃⌥Y)", action: #selector(menuToggle), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Bedienungshilfen freigeben …", action: #selector(menuAccessibility), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Y2K-Overlay beenden", action: #selector(menuQuit), keyEquivalent: ""))
         for item in menu.items { item.target = self }
         statusItem.menu = menu
 
+        // Anker brauchen die Freigabe „Bedienungshilfen“; macOS fragt beim ersten Start einmal nach.
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        scanner.start()
+        registerHotKey()
+
         Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    // ⌃⌥Y (Control + Option + Y) blendet das Overlay ein und aus – wie Strg+Alt+Y unter Windows
+    func registerHotKey() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            guard let userData else { return noErr }
+            let overlay = Unmanaged<Overlay>.fromOpaque(userData).takeUnretainedValue()
+            DispatchQueue.main.async { overlay.settings.aktiv.toggle() }
+            return noErr
+        }, 1, &spec, me, nil)
+        let id = EventHotKeyID(signature: OSType(0x5932_4B21), id: 1) // "Y2K!"
+        RegisterEventHotKey(UInt32(kVK_ANSI_Y), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    @objc func menuAccessibility() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc func menuFirework() { queueFireworks() }
@@ -178,7 +380,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
     // MARK: Claude-Fenster finden
 
     // Vorderstes normales Fenster der App "Claude" in Bildschirm-Koordinaten von macOS (oben links = 0,0)
-    func claudeBounds() -> CGRect? {
+    func claudeBounds() -> (rect: CGRect, pid: pid_t)? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
         for info in list {
             guard (info[kCGWindowOwnerName as String] as? String) == "Claude",
@@ -186,7 +388,8 @@ final class Overlay: NSObject, NSApplicationDelegate {
                   let dict = info[kCGWindowBounds as String] as? NSDictionary,
                   let rect = CGRect(dictionaryRepresentation: dict),
                   rect.width > 200, rect.height > 200 else { continue }
-            return rect
+            let pid = (info[kCGWindowOwnerPID as String] as? Int).map { pid_t($0) } ?? 0
+            return (rect, pid)
         }
         return nil
     }
@@ -213,11 +416,20 @@ final class Overlay: NSObject, NSApplicationDelegate {
         }
         if quitting && n >= quitAt { NSApp.terminate(nil) }
 
-        guard let cg = claudeBounds(), claudeIsFrontmost() else {
+        guard let found = claudeBounds(), claudeIsFrontmost() else {
             window.alphaValue = 0
             fade = 0
             return
         }
+        let cg = found.rect
+        origin = cg.origin
+        scanner.update(pid: found.pid, window: cg)
+        scan = scanner.latest
+        // Antwort fertig: der Stopp-Knopf ist verschwunden -> Glitzer am Eingabefeld
+        if wasWorking && !scan.working && !scan.input.isNull && settings.eingabe {
+            for _ in 0..<45 { spawnAround(local(scan.input)) }
+        }
+        wasWorking = scan.working
         // macOS-Fensterliste: oben links; Cocoa: unten links auf dem Hauptbildschirm
         let primaryHeight = NSScreen.screens.first?.frame.height ?? cg.maxY
         let frame = NSRect(x: cg.minX, y: primaryHeight - cg.maxY, width: cg.width, height: cg.height)
@@ -308,6 +520,24 @@ final class Overlay: NSObject, NSApplicationDelegate {
         sparkles.append(Sparkle(x: x, y: y, size: rnd(4, 11), age: 0, life: rnd(0.8, 2.4), tint: randomTint()))
     }
 
+    // Bildschirm-Koordinaten -> Koordinaten im Overlay-Fenster
+    func local(_ r: CGRect) -> CGRect { r.offsetBy(dx: -origin.x, dy: -origin.y) }
+
+    func coveredByMenu(_ r: CGRect) -> Bool {
+        scan.anchors.contains { $0.kind == .menu && $0.rect.intersects(r) }
+    }
+
+    // Glitzer auf dem Rand eines Rechtecks (z. B. ums Eingabefeld)
+    func spawnAround(_ a: CGRect) {
+        let p = rnd(0, 2 * (a.width + a.height))
+        var x: CGFloat, y: CGFloat
+        if p < a.width { x = a.minX + p; y = a.minY }
+        else if p < a.width + a.height { x = a.maxX; y = a.minY + p - a.width }
+        else if p < 2 * a.width + a.height { x = a.maxX - (p - a.width - a.height); y = a.maxY }
+        else { x = a.minX; y = a.maxY - (p - 2 * a.width - a.height) }
+        sparkles.append(Sparkle(x: x + rnd(-5, 5), y: y + rnd(-5, 5), size: rnd(4, 10), age: 0, life: rnd(0.6, 1.8), tint: randomTint()))
+    }
+
     func queueFireworks() {
         let count = max(1, Int(((4 + CGFloat(Int.random(in: 0...2))) * settings.feuerwerkMenge).rounded()))
         for i in 0..<count { launches.append(now + Double(i) * Double(rnd(0.25, 0.6))) }
@@ -319,6 +549,9 @@ final class Overlay: NSObject, NSApplicationDelegate {
         sparkles = sparkles.compactMap { var s = $0; s.age += dt; return s.age < s.life ? s : nil }
         if settings.glitzer && sparkles.count < 16 && Double.random(in: 0..<1) < 0.25 { spawnEdge(w: w, h: h, band: 22) }
         for _ in 0..<6 where burstLeft > 0 { spawnEdge(w: w, h: h, band: 60); burstLeft -= 1 }
+        if settings.eingabe && scan.working && !scan.input.isNull && sparkles.count < 40 && Double.random(in: 0..<1) < 0.35 {
+            spawnAround(local(scan.input))
+        }
 
         // Feuerwerk
         if settings.feuerwerk && n >= nextAutoFirework {
@@ -404,6 +637,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
             }
         }
 
+        drawAnchors(ctx, n, size: size)
         drawBubbles(ctx, n)
         drawFireworks(ctx, n)
         drawBanner(ctx, n, w: w, h: h)
@@ -421,6 +655,98 @@ final class Overlay: NSObject, NSApplicationDelegate {
         }
 
         if settings.schild { drawBadge(ctx, n, w: w, h: h) }
+    }
+
+    // MARK: Anker zeichnen
+
+    func drawAnchors(_ ctx: CGContext, _ n: CGFloat, size: CGSize) {
+        let win = CGRect(origin: origin, size: size)
+
+        // Eingabefeld: kreisender Chrom-Ring, solange Claude arbeitet
+        if settings.eingabe && scan.working && !scan.input.isNull && win.intersects(scan.input) && !coveredByMenu(scan.input) {
+            let li = local(scan.input.intersection(win.insetBy(dx: 4, dy: 4)))
+            let pulse = 0.65 + 0.35 * sin(n * 4)
+            for i in stride(from: 5, through: 0, by: -1) {
+                let grow = CGFloat(i) * 2.5
+                let alpha: CGFloat = i == 0 ? pulse : 0.35 * pulse * pow(0.6, CGFloat(i))
+                let r = li.insetBy(dx: -grow, dy: -grow)
+                let p = CGPath(roundedRect: r, cornerWidth: 14 + grow, cornerHeight: 14 + grow, transform: nil)
+                strokeGradient(ctx, p, width: 2.5, colors: palette + [palette[0]], alpha: alpha, angle: n * 2.4, in: r)
+            }
+        }
+
+        // Sitzungen in der Seitenleiste
+        if settings.sitzungen {
+            for a in scan.anchors where a.kind != .menu && win.contains(a.rect) && !coveredByMenu(a.rect) {
+                let la = local(a.rect)
+                let cx = la.maxX - 44, cy = la.midY
+                switch a.kind {
+                case .running:
+                    let tint = palette[Int(n * 2 + a.rect.minY) % 4]
+                    ctx.setFillColor(tint.withAlphaComponent(0.27).cgColor)
+                    ctx.fillEllipse(in: CGRect(x: cx - 7, y: cy - 7, width: 14, height: 14))
+                    ctx.saveGState()
+                    ctx.translateBy(x: cx, y: cy); ctx.rotate(by: n * 2.5 + a.rect.minY * 0.01)
+                    ctx.setFillColor(tint.cgColor); ctx.addPath(starPath(0, 0, 7)); ctx.fillPath()
+                    ctx.setFillColor(NSColor.white.cgColor); ctx.addPath(starPath(0, 0, 3.5)); ctx.fillPath()
+                    ctx.restoreGState()
+                case .unread:
+                    let k = 0.5 + 0.5 * sin(n * 5 + a.rect.minY)
+                    let s = 4 + 2.5 * k
+                    ctx.setFillColor(palette[0].withAlphaComponent(0.25 + 0.25 * k).cgColor)
+                    ctx.fillEllipse(in: CGRect(x: cx - s * 1.8, y: cy - s * 1.8, width: s * 3.6, height: s * 3.6))
+                    ctx.setFillColor(palette[0].cgColor)
+                    ctx.fillEllipse(in: CGRect(x: cx - s * 0.8, y: cy - s * 0.8, width: s * 1.6, height: s * 1.6))
+                case .waiting:
+                    let k = abs(sin(n * 3 + a.rect.minY))
+                    let yellow = NSColor(srgbRed: 1, green: 0.84, blue: 0.24, alpha: 0.47 + 0.53 * k)
+                    ctx.setFillColor(yellow.cgColor); ctx.addPath(starPath(cx, cy, 5 + 3 * k)); ctx.fillPath()
+                    ctx.setFillColor(NSColor.white.withAlphaComponent(0.47 + 0.53 * k).cgColor); ctx.addPath(starPath(cx, cy, 2.5 + 1.5 * k)); ctx.fillPath()
+                case .menu: break
+                }
+            }
+        }
+
+        // Chrom-Chips über den Knöpfen der Kopfleiste; Klicks gehen an den Knopf darunter
+        if settings.kopfleiste && !scan.icons.isEmpty {
+            let mouseScreen = NSEvent.mouseLocation // Cocoa: unten links
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            let mouse = CGPoint(x: mouseScreen.x - origin.x, y: primaryHeight - mouseScreen.y - origin.y)
+            for icon in scan.icons where icon.rel.maxX <= size.width && icon.rel.minY >= 0 {
+                if coveredByMenu(icon.rel.offsetBy(dx: origin.x, dy: origin.y)) { continue }
+                drawHeaderIcon(ctx, icon, hover: icon.rel.contains(mouse), n)
+            }
+        }
+    }
+
+    func drawHeaderIcon(_ ctx: CGContext, _ icon: IconAnchor, hover: Bool, _ n: CGFloat) {
+        let r = icon.rel
+        let side = min(min(r.width, r.height) * 0.84, 22)
+        let chip = CGRect(x: r.midX - side / 2, y: r.midY - side / 2, width: side, height: side)
+        let path = CGPath(roundedRect: chip, cornerWidth: side * 0.32, cornerHeight: side * 0.32, transform: nil)
+        let top = hover ? NSColor(srgbRed: 0.31, green: 0.14, blue: 0.46, alpha: 1) : NSColor(srgbRed: 0.18, green: 0.09, blue: 0.30, alpha: 1)
+        let bottom = hover ? NSColor(srgbRed: 0.16, green: 0.06, blue: 0.29, alpha: 1) : NSColor(srgbRed: 0.09, green: 0.05, blue: 0.16, alpha: 1)
+        ctx.saveGState()
+        ctx.addPath(path); ctx.clip()
+        if let g = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: [top.cgColor, bottom.cgColor] as CFArray, locations: nil) {
+            ctx.drawLinearGradient(g, start: CGPoint(x: chip.midX, y: chip.minY), end: CGPoint(x: chip.midX, y: chip.maxY), options: [])
+        }
+        // Glanzlicht in der oberen Hälfte
+        ctx.setFillColor(NSColor.white.withAlphaComponent(hover ? 0.3 : 0.2).cgColor)
+        ctx.fill(CGRect(x: chip.minX + side * 0.12, y: chip.minY + side * 0.07, width: side * 0.76, height: side * 0.32))
+        ctx.restoreGState()
+        strokeGradient(ctx, path, width: hover ? 1.3 : 0.9, colors: [palette[0], palette[1]], alpha: 1, angle: n * 1.05 + r.minX, in: chip)
+
+        // Glyphe: erst ein farbiger Schein, dann die weiße Linie
+        var transform = CGAffineTransform(translationX: chip.minX, y: chip.minY).scaledBy(x: side / 24, y: side / 24)
+        guard let g = glyph(icon.kind).copy(using: &transform) else { return }
+        ctx.setLineCap(.round); ctx.setLineJoin(.round)
+        if icon.enabled {
+            ctx.setStrokeColor((hover ? palette[1] : palette[0]).withAlphaComponent(hover ? 0.55 : 0.27).cgColor)
+            ctx.setLineWidth(3.6 * side / 24); ctx.addPath(g); ctx.strokePath()
+        }
+        ctx.setStrokeColor(icon.enabled ? NSColor.white.cgColor : NSColor(srgbRed: 0.75, green: 0.69, blue: 0.84, alpha: 0.47).cgColor)
+        ctx.setLineWidth(1.9 * side / 24); ctx.addPath(g); ctx.strokePath()
     }
 
     func drawBadge(_ ctx: CGContext, _ n: CGFloat, w: CGFloat, h: CGFloat) {
