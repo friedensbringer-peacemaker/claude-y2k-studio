@@ -1,0 +1,6 @@
+# Skripte für den Mac brauchen Unix-Zeilenenden, auch wenn sie unter Windows ausgecheckt werden
+*.sh    text eol=lf
+*.swift text eol=lf
+*.mp4   binary
+*.gif   binary
+*.png   binary

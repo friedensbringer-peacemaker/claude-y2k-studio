@@ -1,0 +1,12 @@
+{
+  "name": "y2k-studio",
+  "description": "Y2K-Studio: Look, Einstellungsleiste und Overlay-Effekte für die Claude-Desktop-App",
+  "owner": { "name": "friedensbringer-peacemaker" },
+  "plugins": [
+    {
+      "name": "y2k",
+      "source": "./y2k",
+      "description": "Y2K-Look für die Claude-Desktop-App: Chrom, Perlmutt, irisierende Folie, bewegter Hintergrund, Einstellungsleiste – dazu ein Windows-Overlay mit Glitzer, Feuerwerk, Seifenblasen und Pixel-Bannern"
+    }
+  ]
+}

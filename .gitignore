@@ -1,0 +1,12 @@
+# Von Claude Code erzeugte Typdateien (entstehen beim Laden neu)
+y2k/.claude-plugin/types/
+
+# Gebaute Pakete (werkzeuge/paket.py)
+_paket/
+
+# Aufnahmen des echten Fensters: zeigen alles, was gerade auf dem Bildschirm war
+docs/bilder/*-app.*
+
+__pycache__/
+*.pyc
+

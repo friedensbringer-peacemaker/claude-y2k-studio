@@ -1,0 +1,47 @@
+{
+  "name": "y2k",
+  "version": "0.23.0",
+  "description": "Y2K-Look für die Claude-Desktop-App: Chrom, Perlmutt, irisierende Folie, bewegter Hintergrund, Einstellungsleiste Y2K-Studio, /y2k-Befehle – dazu ein Overlay (Windows, Mac in Arbeit) mit Glitzer, Feuerwerk, Seifenblasen und Pixel-Bannern",
+  "author": {
+    "name": "friedensbringer-peacemaker"
+  },
+  "userConfig": {
+    "label": {
+      "type": "string",
+      "title": "Text auf dem Schild",
+      "description": "Großer Text auf dem Chrom-Schild rechts über dem Eingabefeld. Darunter stehen automatisch Version und Datum.",
+      "default": "Y2K Studio"
+    },
+    "schild": {
+      "type": "string",
+      "title": "Schild",
+      "description": "unten-rechts setzt das Chrom-Schild in die Szene unten rechts, ueber-eingabe als scharfes Schild über dem Eingabefeld, aus blendet es aus.",
+      "default": "unten-rechts",
+      "options": [
+        "unten-rechts",
+        "ueber-eingabe",
+        "aus"
+      ]
+    },
+    "icons": {
+      "type": "string",
+      "title": "Tool-Icons",
+      "description": "an setzt eine kleine Chrom-Perle mit Zeichen vor jeden Tool-Aufruf (Desktop-App), aus lässt die Zeilen wie sie sind.",
+      "default": "an",
+      "options": [
+        "an",
+        "aus"
+      ]
+    },
+    "overlay": {
+      "type": "string",
+      "title": "Overlay-Glitzer",
+      "description": "an meldet dem Y2K-Overlay (Windows-Programm in y2k-overlay) jede fertige Antwort, damit es Glitzer regnen lässt; aus schickt nichts.",
+      "default": "an",
+      "options": [
+        "an",
+        "aus"
+      ]
+    }
+  }
+}
