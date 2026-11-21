@@ -5,7 +5,7 @@
 Y2K-Studio besteht aus zwei Teilen:
 
 1. **Ein Mod für Claude** (Claude Code, Code-Tab der Desktop-App): Farbschema, bewegter Hintergrund, Chromperlen an Werkzeug-Aufrufen, eine eigene Einstellungsleiste und der Befehl `/y2k`.
-2. **Ein Overlay-Programm** (Windows; Mac-Grundfassung in Arbeit): ein durchsichtiges Fenster, das sich an Claude andockt. Alle Klicks gehen hindurch – darüber leuchten Rahmen, Glitzer, Feuerwerk, Seifenblasen und Pixel-Banner, und es reagiert auf das, was in Claude passiert.
+2. **Ein Overlay-Programm** (Windows und Mac): ein durchsichtiges Fenster, das sich an Claude andockt. Alle Klicks gehen hindurch – darüber leuchten Rahmen, Glitzer, Feuerwerk, Seifenblasen und Pixel-Banner, und es reagiert auf das, was in Claude passiert.
 
 Claude arbeitet dabei ganz normal weiter; Y2K-Studio ändert nur, wie es aussieht.
 
@@ -49,7 +49,11 @@ Claude arbeitet dabei ganz normal weiter; Y2K-Studio ändert nur, wie es aussieh
 
 ### Mac
 
-Der Mod läuft auf dem Mac unverändert. Für das Overlay gibt es eine **Grundfassung in Swift** (`y2k/overlay/mac/`) mit Rahmen, Glitzer, Scanlines, Schild, Feuerwerk, Seifenblasen und Banner; sie baut sich beim ersten Start selbst. Sie ist **noch nicht auf einem Mac getestet**, und die Reaktionen auf Bedienelemente fehlen noch – siehe [AGENTS.md](AGENTS.md).
+Der Mod läuft auf dem Mac unverändert. Das Overlay gibt es auch für den Mac (`y2k/overlay/mac/`, Swift) – mit allem, was die Windows-Fassung kann: Rahmen, Glitzer, Feuerwerk, Seifenblasen, Banner, Eingabefeld-Ring, Sitzungs-Sterne, Kopfleisten-Chips, Tastenkürzel **⌃⌥Y** und ein ✧-Menü in der Menüleiste.
+
+- Voraussetzung: einmalig `xcode-select --install` (der Swift-Compiler). Beim ersten Start baut sich das Overlay selbst (`start.sh`, ca. 20–60 s).
+- Für die Reaktionen auf Claude fragt macOS nach der Freigabe **Bedienungshilfen** (Systemeinstellungen → Datenschutz & Sicherheit). Ohne Freigabe laufen Rahmen und Effekte trotzdem.
+- Jede Änderung wird [automatisch auf einem Mac gebaut und gestartet](../../actions/workflows/mac-overlay.yml). Mit der echten Claude-App auf dem Mac ist es noch nicht ausprobiert – Rückmeldungen sind sehr willkommen.
 
 ---
 
@@ -151,7 +155,7 @@ claude plugin install y2k@y2k-studio --config "label=Mein Text" --config schild=
 
 - Die Anker erkennen die Bedienelemente an ihren **deutschen Namen**. Läuft die App in einer anderen Sprache, bleiben Rahmen und Effekte, aber Eingabefeld-Ring, Sitzungs-Sterne und Kopfleisten-Symbole fehlen.
 - Mods sind eine Early-Access-Schnittstelle von Claude Code und können sich mit App-Updates ändern.
-- Das Mac-Overlay ist eine ungetestete Grundfassung.
+- Das Mac-Overlay wird automatisch gebaut und gestartet, ist aber noch nicht mit der echten Claude-App auf einem Mac ausprobiert.
 
 ---
 

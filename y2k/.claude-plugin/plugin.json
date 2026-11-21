@@ -1,7 +1,7 @@
 {
   "name": "y2k",
-  "version": "0.23.0",
-  "description": "Y2K-Look für die Claude-Desktop-App: Chrom, Perlmutt, irisierende Folie, bewegter Hintergrund, Einstellungsleiste Y2K-Studio, /y2k-Befehle – dazu ein Overlay (Windows, Mac in Arbeit) mit Glitzer, Feuerwerk, Seifenblasen und Pixel-Bannern",
+  "version": "0.23.1",
+  "description": "Y2K-Look für die Claude-Desktop-App: Chrom, Perlmutt, irisierende Folie, bewegter Hintergrund, Einstellungsleiste Y2K-Studio, /y2k-Befehle – dazu ein Overlay (Windows und Mac) mit Glitzer, Feuerwerk, Seifenblasen und Pixel-Bannern",
   "author": {
     "name": "friedensbringer-peacemaker"
   },

@@ -11,7 +11,7 @@ Ein **Mod für die Claude-Desktop-App** (Claude Code, Code-Tab) im Y2K-Stil plus
 |---|---|---|
 | Mod (Plugin `y2k`) | `y2k/` | Farbschema, bewegter SVG-Hintergrund, Chromperlen an Werkzeug-Zeilen, Schild, Einstellungsleiste „Y2K-Studio“, Befehl `/y2k …`, startet und steuert das Overlay |
 | Overlay Windows | `y2k/overlay/Y2KOverlay.cs` | C#-Programm (Windows Forms, .NET Framework 4, kompiliert zur Laufzeit von PowerShell 5.1): durchklickbares Fenster über Claude mit Rahmen, Glitzer, Ankern an Bedienelementen, Feuerwerk, Seifenblasen, Pixel-Banner |
-| Overlay Mac | `y2k/overlay/mac/Y2KOverlay.swift` | Grundfassung in Swift/AppKit, gleiches Dateiprotokoll; noch ohne Anker |
+| Overlay Mac | `y2k/overlay/mac/Y2KOverlay.swift` | Swift/AppKit, gleiches Dateiprotokoll, Anker über die Accessibility-API; Bau auf GitHub Actions geprüft |
 | Marktplatz | `.claude-plugin/marketplace.json` | macht das Repo mit `claude plugin marketplace add` installierbar |
 | Werkzeuge | `werkzeuge/` | `render.py` (Vorschaubilder ohne App), `aufnahme.py` (echtes Fenster aufnehmen), `paket.py` (ZIP), `neu-laden.ps1` |
 
@@ -74,9 +74,11 @@ Voraussetzungen: Claude-Desktop-App mit Claude Code, Node.js (für `npx typescri
 
 - Voraussetzung: Xcode-Befehlszeilenwerkzeuge (`xcode-select --install`).
 - `sh y2k/overlay/mac/start.sh` baut beim ersten Mal (`swiftc -O`) nach `~/.claude/y2k-overlay/Y2KOverlay-mac` und startet im Hintergrund; der Mod ruft das ebenfalls auf (`uname -s` = Darwin).
-- **Stand: ungetestet** – geschrieben auf Windows, wo AppKit fehlt. Erster Lauf auf einem Mac: `build.log` lesen, Fehler beheben.
+- **Stand:** Funktionsgleich mit Windows (Rahmen, Glitzer, Scanlines, Schild, Feuerwerk, Seifenblasen, Banner, Eingabefeld-Ring, Sitzungs-Sterne, Kopfleisten-Chips, Tastenkürzel ⌃⌥Y, ✧-Menü in der Menüleiste). **Geprüft** auf GitHub Actions (`.github/workflows/mac-overlay.yml`, nur im öffentlichen Repo): kompiliert ohne Warnung mit Swift 6.3, startet, schreibt `alive`, verkraftet `feuerwerk`/`blasen`/`banner`, beendet sich per `quit`. **Noch nicht geprüft:** das Zusammenspiel mit dem echten Claude-Fenster (Lage, Anker-Namen der Mac-App, Kopfleisten-Positionen) – das geht nur auf einem Mac mit Claude.
 - Lage: `CGWindowListCopyWindowInfo` (Eigentümer „Claude“, Ebene 0) – braucht keine Freigabe. Sichtbar nur, solange Claude die aktive App ist (Fensterebene `.floating`).
-- **Offen für den Mac:** Anker über die Accessibility-API (`AXUIElement`: Eingabefeld „Prompt“, Knopf „Stopp“, Sitzungsknöpfe) – braucht Freigabe unter Datenschutz & Sicherheit → Bedienungshilfen; Tastenkürzel (Carbon `RegisterEventHotKey`); Kopfleisten-Symbole.
+- Anker: `AnchorScanner` liest per `AXUIElementCopyMultipleAttributeValues` (Rolle, Beschreibung, Titel, Lage, Größe, Kinder, aktiv) eine Breitensuche ab der App (max. 6000 Elemente, alle 0,6 s); setzt vorher `AXManualAccessibility` (Electron baut den Baum sonst nicht). Braucht die Freigabe **Bedienungshilfen**; macOS fragt beim ersten Start, das ✧-Menü hat „Bedienungshilfen freigeben …“. Achtung: Nach jedem Neubau (`swiftc`) kann macOS die Freigabe für die neue Datei neu verlangen.
+- Die Fensterknöpfe (Ampel) bekommen auf dem Mac **keine** Chips; die übrigen Kopfleisten-Namen sind dieselben wie unter Windows.
+- Zum Prüfen auf einem Mac: Overlay starten, in einer arbeitenden Sitzung auf Ring und Sterne achten; wenn Anker fehlen, mit dem Programm „Accessibility Inspector“ (Xcode) die Namen der Knöpfe nachsehen und in `AnchorScanner` anpassen.
 
 ## Wo was im Code steht
 
@@ -120,7 +122,7 @@ Voraussetzungen: Claude-Desktop-App mit Claude Code, Node.js (für `npx typescri
 
 ## Fahrplan
 
-- Mac: erster echter Bau und Test, dann Anker (AX-API), Tastenkürzel, Kopfleisten-Symbole.
+- Mac: Test mit der echten Claude-App (Anker-Namen und -Lagen bestätigen), danach ggf. signiertes App-Paket statt `swiftc`-Datei (damit die Bedienungshilfen-Freigabe Neubauten überlebt).
 - Anker sprachunabhängig machen (z. B. über Rollen und Lage statt Namen, oder Namenslisten je Sprache).
 - Autostart des Overlays mit Windows bzw. als Anmeldeobjekt auf dem Mac.
 - Effekte: weitere (Schnee, Konfetti, Laser), Effekt bei bestimmten Ereignissen (Tool-Fehler, langer Lauf fertig).

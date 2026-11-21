@@ -1,7 +1,7 @@
 // Y2K-Szene: Chrom, Perlmutt und irisierende Folie.
 // Jedes Element ist eine kleine Bauanleitung, die SVG-Text liefert.
 
-export const VERSION = '0.23.0'
+export const VERSION = '0.23.1'
 export const DATE = '19.11.2026'
 
 const n = (v: number) => Math.round(v * 100) / 100
